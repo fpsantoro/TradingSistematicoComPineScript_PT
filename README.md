@@ -15,9 +15,9 @@ Bem-vindo ao recurso oficial do livro! Aqui você encontrará todos os códigos 
 * [Capítulo 12 : Código da estratégia Divergence (com gestão de risco)] - Abra o arquivo `Divergence_ATR.txt`
 
 ## 🚀 Como usar esses códigos
-1. Acesse a pasta acima e clique no arquivo de estratégia desejado.
+1. Acesse a pasta acima e clique no arquivo da estratégia desejada.
 2. No canto superior direito do código, clique no ícone **"Copiar conteúdo bruto"** (os dois quadrados sobrepostos).
 3. Acesse o TradingView, abra o **Editor Pine**, cole o código e clique em **Adicionar ao gráfico**.
 
 
-Implementação do livro Trading Sistemático com Pine Script. O método e o contexto estão no livro.
+O método e o contexto estão no livro.
