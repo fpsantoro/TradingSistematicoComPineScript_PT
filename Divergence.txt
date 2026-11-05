@@ -1,0 +1,244 @@
+//@version=5
+strategy("Divergence",
+     overlay = false,
+     initial_capital = 10000,
+     default_qty_type = strategy.cash,
+     default_qty_value = 10000,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.04,
+     pyramiding = 0)
+
+//───────────────────────────────────────────────────────────
+// INPUTS
+//───────────────────────────────────────────────────────────
+group_session = "Configuração da Sessão"
+session_duration_hours = input.float(8.5, "Duração da Sessão (horas)", minval=0.1, step=0.1, group=group_session,
+ tooltip="Ex: 7.0h para a B3 | 8.5h para bolsas europeias")
+
+grupo_estrategia = "Parâmetros da Estratégia"
+razao_risco = input.float(1.2, "Razão Risco/Recompensa",
+ step=0.1, group=grupo_estrategia)
+
+
+ grupo_sltp = "Stop-Loss e Take-Profit"
+stop_loss_perc = input.float(4.5, "Stop-Loss (%)",
+ minval=0.1, step=0.1, group=grupo_sltp) / 100
+grupo_swings = "Níveis de Swing"
+mostrar_swings  = input.bool(true, "Mostrar Swing High/Low Diário", group=grupo_swings)
+cor_resistencia = color.new(color.teal, 0)
+cor_suporte     = color.new(color.maroon, 0)
+
+group_divergence = "Divergências (Fast Stochastic diário)"
+period   = input.int(14, "Período do Fast Stochastic (dias)",
+ minval=1, maxval=100, group=group_divergence)
+thrhdH   = input.int(70, "Nível mínimo para divergência de baixa (Stoch)", minval=0, maxval=100, group=group_divergence)
+thrhdL   = input.int(30, "Nível máximo para divergência de alta (Stoch)", minval=0, maxval=100, group=group_divergence)
+filter   = input.int(30, "Limiar de divergência forte (Storz)", minval=0, maxval=100, group=group_divergence)
+
+//───────────────────────────────────────────────────────────
+// Cálculo de candles por dia
+//───────────────────────────────────────────────────────────
+timeframe_seconds = timeframe.in_seconds(timeframe.period)
+session_seconds   = session_duration_hours * 3600
+candles_per_day   = math.ceil(session_seconds /
+ timeframe_seconds)
+
+//───────────────────────────────────────────────────────────
+// Dados diários
+//───────────────────────────────────────────────────────────
+[hiD, loD, clD]  = request.security(syminfo.tickerid, "D",
+ [high, low, close], lookahead=barmerge.lookahead_off)
+[hiD1, loD1]     = request.security(syminfo.tickerid, "D",
+ [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[hiD2, loD2]     = request.security(syminfo.tickerid, "D",
+ [high[2], low[2]], lookahead=barmerge.lookahead_off)
+
+FastStoch = request.security(syminfo.tickerid, "D",
+ ta.stoch(close, high, low, period)[1],
+ lookahead=barmerge.lookahead_off)
+
+//───────────────────────────────────────────────────────────
+// Variáveis de Swing e Divergência
+//───────────────────────────────────────────────────────────
+var float last_swing_high = na
+var float prev_swing_high = na
+var float last_swing_low  = na
+var float prev_swing_low  = na
+
+var float fsH  = na
+var float fsH1 = na
+var float fsL  = na
+var float fsL1 = na
+
+var float storz_di_high = na //Divergência de baixa (bearish)
+var float storz_di_low  = na //Divergência de alta (bullish)
+var float PeakDivergence = na
+var float ThroughDivergence = na
+var bool  bullish_div = false
+var bool  bearish_div = false
+
+var float hiH1 = 0.0
+var float loH1 = 100000.0
+var float max_fsH1 = 0.0
+var float min_fsH1 = 100.0
+
+var float hiL1 = 0.0
+var float loL1 = 100000.0
+var float max_fsL1 = 0.0
+var float min_fsL1 = 100.0
+
+//───────────────────────────────────────────────────────────
+// Detecção de novos swings diários
+//───────────────────────────────────────────────────────────
+new_day = ta.change(time("D")) != 0
+
+daily_swing_high = new_day and not na(hiD1) and not na(hiD)
+ and not na(hiD2) and hiD1 > hiD and hiD1 > hiD2
+daily_swing_low  = new_day and not na(loD1) and not na(loD)
+ and not na(loD2) and loD1 < loD and loD1 < loD2
+
+// Atualização contínua dos extremos para normalização
+hiH1     := math.max(hiD1, hiH1)
+loH1     := math.min(hiD1, loH1)
+max_fsH1 := math.max(FastStoch, max_fsH1)
+min_fsH1 := math.min(FastStoch, min_fsH1)
+
+hiL1     := math.max(loD1, hiL1)
+loL1     := math.min(loD1, loL1)
+max_fsL1 := math.max(FastStoch, max_fsL1)
+min_fsL1 := math.min(FastStoch, min_fsL1)
+
+//───────────────────────────────────────────────────────────
+// Cálculo do Índice de Divergência de Storz
+//───────────────────────────────────────────────────────────
+if daily_swing_high
+    prev_swing_high := last_swing_high
+    last_swing_high := hiD1
+    fsH1            := fsH
+    fsH             := FastStoch
+
+    bearish_div := not na(prev_swing_high)
+ and last_swing_high > prev_swing_high and not na(fsH1)
+ and fsH < fsH1 and fsH > thrhdH
+
+    float price_change = (last_swing_high - prev_swing_high)/
+ (hiH1 - loH1)
+    float osc_change   = (fsH - fsH1) / (max_fsH1 - min_fsH1)
+    PeakDivergence := 50.0 * (price_change - osc_change)
+    storz_di_high := bearish_div ? PeakDivergence : na
+
+    // Reset dos extremos
+    hiH1     := hiD1
+    loH1     := hiD1
+    max_fsH1 := fsH
+    min_fsH1 := fsH
+
+if daily_swing_low
+    prev_swing_low := last_swing_low
+    last_swing_low := loD1
+    fsL1           := fsL
+    fsL            := FastStoch
+
+    bullish_div := not na(prev_swing_low)
+ and last_swing_low < prev_swing_low and not na(fsL1)
+ and fsL > fsL1 and fsL < thrhdL
+    
+    float price_change = (last_swing_low - prev_swing_low) /
+ (hiL1 - loL1)
+    float osc_change   = (fsL - fsL1) / (max_fsL1 - min_fsL1)
+    ThroughDivergence := 50.0 * (price_change - osc_change)
+    storz_di_low := bullish_div ? ThroughDivergence : na
+     // Reset dos extremos
+    hiL1     := loD1
+    loL1     := loD1
+    max_fsL1 := fsL
+    min_fsL1 := fsL
+
+//───────────────────────────────────────────────────────────
+// Plots dos swings e do Índice de Divergência
+//───────────────────────────────────────────────────────────
+plot(mostrar_swings ? last_swing_high : na, "Resistência Diária", color=cor_resistencia, style=plot.style_circles,
+ linewidth=1, force_overlay=true, offset=-candles_per_day)
+plot(mostrar_swings ? last_swing_low  : na, "Suporte Diário",
+ color=cor_suporte,     style=plot.style_circles,
+ linewidth=1, force_overlay=true, offset=-candles_per_day)
+
+plot(storz_di_high, "Divergência de Baixa (Storz)",
+ color=color.red,   linewidth=2, style=plot.style_linebr,
+ offset=-candles_per_day)
+plot(storz_di_low,  "Divergência de Alta (Storz)",
+ color=color.green, linewidth=2, style=plot.style_linebr,
+ offset=-candles_per_day)
+
+plot(PeakDivergence, "Peak divergence", color.maroon, 1,
+ plot.style_steplinebr, offset=-candles_per_day,
+ display=display.pane)
+plot(ThroughDivergence, "Through divergence", color.teal, 1,
+ plot.style_steplinebr, offset=-candles_per_day,
+ display=display.pane)
+
+hline( filter, "Limiar Superior", color=color.black,
+ linestyle=hline.style_dashed)
+
+ hline(-filter, "Limiar Inferior", color=color.black,
+ linestyle=hline.style_dashed)
+
+//───────────────────────────────────────────────────────────
+// Condições de entrada e gestão da posição
+//───────────────────────────────────────────────────────────
+var bool  in_position       = false
+var float entry_price       = na
+var float stop_loss_level   = na
+var float take_profit_level = na
+
+time_condition = timestamp(year(time), month(time),
+ dayofmonth(time)) >= timestamp(2022, 01, 01)
+
+bullish_filter = not na(storz_di_low)
+ and storz_di_low < -filter
+bearish_filter = not na(storz_di_high)
+ and storz_di_high > filter
+
+longCondition  = not in_position and bullish_filter
+ and time_condition
+shortCondition = not in_position and bearish_filter
+ and time_condition
+
+exit_by_strategy = in_position and strategy.position_size==0
+
+if longCondition
+    in_position       := true
+    bullish_div       := false
+    entry_price       := close
+    stop_loss_level   := entry_price * (1 - stop_loss_perc)
+    take_profit_level := entry_price + (entry_price –
+ stop_loss_level) * razao_risco
+    strategy.entry("Long", strategy.long)
+    strategy.exit("TP/SL Long", "Long", stop=stop_loss_level,
+ limit=take_profit_level)
+
+if shortCondition
+    in_position       := true
+    bearish_div       := false
+    entry_price       := close
+    stop_loss_level   := entry_price * (1 + stop_loss_perc)
+    take_profit_level := entry_price - (stop_loss_level –
+ entry_price) * razao_risco
+    strategy.entry("Short", strategy.short)
+    strategy.exit("TP/SL Short", "Short",
+ stop=stop_loss_level, limit=take_profit_level)
+
+if exit_by_strategy
+    in_position       := false
+    entry_price       := na
+    stop_loss_level   := na
+    take_profit_level := na
+
+// Visualização dos níveis
+plot(in_position ? take_profit_level : na, "Take-Profit",
+ color=color.purple, style=plot.style_linebr, linewidth=1,
+ force_overlay=true)
+plot(in_position ? stop_loss_level   : na, "Stop-Loss",
+ color=color.black,  style=plot.style_linebr, linewidth=1,
+ force_overlay=true)
+

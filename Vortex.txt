@@ -1,0 +1,143 @@
+//@version=5
+strategy("Vortex", 
+     overlay = false, 
+     initial_capital = 100000, 
+     default_qty_type = strategy.cash, 
+     default_qty_value = 10000,
+     commission_type = strategy.commission.percent, 
+     commission_value = 0.04, 
+     pyramiding = 0)
+
+//───────────────────────────────────────────────────────────
+// Inputs
+//───────────────────────────────────────────────────────────
+group_session = "Configuração da Sessão"
+session_duration_hours = input.float(8.5, "Duração da Sessão (horas)", minval=0.1, step=0.1, group=group_session,
+ tooltip="Informe a duração da sessão de negociação em horas (ex: 8.5h para as principais bolsas europeias")
+
+grupo_estrategia = "Parâmetros da Estratégia"
+operar_long         = input.bool(true, "Operar Long (true) ou Short (false)", group = grupo_estrategia)
+razao_risco_ideal   = input.float(2.2, "Razão Risco/Recompensa ideal", step = 0.1, group = rupo_estrategia)
+razao_risco_minima  = input.float(1.5, "Razão Risco/Recompensa mínima", step = 0.1, group=grupo_estrategia)
+
+grupo_sltp       = "Stop-Loss e Take-Profit"
+stop_loss_perc   = input.float(2.0, "Stop-Loss (%)", minval = 0.1, step = 0.1, group = grupo_sltp) / 100
+
+grupo_swings     = "Níveis de Swing"
+mostrar_swings   = input.bool(true, "Mostrar Swing High/Low Diário", group = grupo_swings)
+cor_resistencia  = input.color(color.new(color.teal, 0), "Cor da Resistência", group = grupo_swings)
+cor_suporte      = input.color(color.new(color.maroon, 0), "Cor do Suporte", group = grupo_swings)
+
+grupo_filtro     = "Indicador Vortex"
+lensig = input.int(5, "Período do Vortex (em dias)", minval=1, group = grupo_filtro)
+
+//───────────────────────────────────────────────────────────
+// Dados diários
+//───────────────────────────────────────────────────────────
+[maxima_d, minima_d] = request.security(syminfo.tickerid, "D", [high, low], lookahead = barmerge.lookahead_off)
+[maxima_d1, minima_d1] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_off)
+[maxima_d2, minima_d2] = request.security(syminfo.tickerid, "D", [high[2], low[2]], lookahead = barmerge.lookahead_off)
+
+var float ultimo_swing_high = na
+var float penultimo_swing_high = na
+var float ultimo_swing_low  = na
+var float penultimo_swing_low  = na
+
+var float preco_entrada     = na
+var float nivel_stop        = na
+var float nivel_target      = na
+var bool  em_posicao        = false
+
+novo_dia = ta.change(time("D")) != 0
+
+swing_high_diario = novo_dia and not na(maxima_d) and not na(maxima_d1) and not na(maxima_d2) and maxima_d1 > maxima_d and maxima_d1 > maxima_d2
+swing_low_diario  = novo_dia and not na(minima_d) and not na(minima_d1) and not na(minima_d2) and minima_d1 < minima_d and minima_d1 < minima_d2
+
+if swing_high_diario
+    penultimo_swing_high := ultimo_swing_high
+    ultimo_swing_high    := maxima_d1
+
+if swing_low_diario
+    penultimo_swing_low := ultimo_swing_low
+    ultimo_swing_low    := minima_d1
+
+plot(mostrar_swings ? ultimo_swing_high : na, "Resistência Diária", color = cor_resistencia, style = plot.style_circles, linewidth = 1,
+ force_overlay = true)
+plot(mostrar_swings ? ultimo_swing_low  : na, "Suporte Diário", color = cor_suporte, style =plot.style_circles, linewidth = 1,
+ force_overlay = true)
+
+//───────────────────────────────────────────────────────────
+// Cálculo do indicador
+//───────────────────────────────────────────────────────────
+// Cálculo do número de candles por dia
+timeframe_seconds = timeframe.in_seconds(timeframe.period)
+session_seconds   = session_duration_hours * 3600
+candles_per_day   = math.ceil(session_seconds / timeframe_seconds)
+
+// Cálculo do Vortex
+VMP = math.sum( math.abs( high - low[1]), lensig * candles_per_day)
+VMM = math.sum( math.abs( low - high[1]), lensig * candles_per_day )
+STR = math.sum( ta.tr(true), lensig * candles_per_day )
+
+VIP = VMP / STR
+VIM = VMM / STR
+
+//───────────────────────────────────────────────────────────
+// Condições de estrutura
+//───────────────────────────────────────────────────────────
+arco_temporal = timestamp(year(time), month(time), dayofmonth(time)) >= timestamp(2022, 01, 01) 
+
+fundos_ascendentes = not na(ultimo_swing_low) and not na(penultimo_swing_low) and ultimo_swing_low > penultimo_swing_low
+topos_descendentes = not na(ultimo_swing_high) and not na(penultimo_swing_high) and ultimo_swing_high < penultimo_swing_high
+
+tendencia_alta = VIP > VIM
+
+
+ // Condições de entrada
+condicao_long  = ta.crossover(close, ultimo_swing_high) and not em_posicao and fundos_ascendentes and operar_long and arco_temporal and tendencia_alta
+condicao_short = ta.crossunder(close, ultimo_swing_low) and not em_posicao and topos_descendentes and not operar_long and arco_temporal
+ and not tendencia_alta
+
+// Detecção de saída por stop-loss ou take-profit
+liquidar_posicao = em_posicao and strategy.position_size == 0
+
+//───────────────────────────────────────────────────────────
+// Execução da estratégia
+//───────────────────────────────────────────────────────────
+if condicao_long
+    preco_entrada := ultimo_swing_high
+    nivel_stop    := preco_entrada * (1 - stop_loss_perc)
+    nivel_target  := preco_entrada * (1 + razao_risco_ideal * stop_loss_perc)
+
+    if (nivel_target - close) / (close - nivel_stop) >= razao_risco_minima
+        strategy.entry("Long", strategy.long)
+        strategy.exit("TP/SL Long", "Long", stop = nivel_stop, limit = nivel_target)
+        em_posicao := true
+
+if condicao_short
+    preco_entrada := ultimo_swing_low
+    nivel_stop    := preco_entrada * (1 + stop_loss_perc)
+    nivel_target  := preco_entrada * (1 - razao_risco_ideal * stop_loss_perc)
+
+    if (close - nivel_target) / (nivel_stop - close) >= razao_risco_minima
+        strategy.entry("Short", strategy.short)
+        strategy.exit("TP/SL Short", "Short", stop = nivel_stop, limit = nivel_target)
+        em_posicao := true
+
+// Reset quando a posição é encerrada
+if liquidar_posicao
+    em_posicao    := false
+    preco_entrada := na
+    nivel_stop    := na
+    nivel_target  := na
+
+//───────────────────────────────────────────────────────────
+// Visualização dos níveis
+//───────────────────────────────────────────────────────────
+plot(em_posicao ? nivel_target : na, "Take-Profit", color = color.purple, style = plot.style_linebr, linewidth = 1, force_overlay = true)
+plot(em_posicao ? nivel_stop   : na, "Stop-Loss", color = color.black,  style = plot.style_linebr, linewidth = 1, force_overlay = true)
+
+plot(VIM, color=color.teal, title="VI-")
+plot(VIP, color=color.new(#51b8f8, 0), title="VI+")
+hline(1, "Linha de base", color = color.black, linestyle = hline.style_dotted)
+

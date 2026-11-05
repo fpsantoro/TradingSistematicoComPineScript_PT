@@ -1,0 +1,148 @@
+//@version=5
+strategy("Breakout",
+     overlay = false,
+     initial_capital = 100000,
+     default_qty_type = strategy.fixed,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.04,
+     pyramiding = 0)
+
+//═════════════════════════════════════════════════════════════
+// INPUTS
+//═════════════════════════════════════════════════════════════
+group_session = "Configuração da Sessão"
+session_duration_hours = input.float(8.5, "Duração da Sessão (horas)", minval=0.1, step=0.1, group=group_session,
+     tooltip="Ex: 8.5h para bolsas europeias | 7.0h para a B3 | 6.5h para a B3")
+
+grupo_estrategia = "Parâmetros da Estratégia"
+operar_long         = input.bool(true, "Operar Long (true) ou Short (false)", group=grupo_estrategia)
+razao_risco_ideal   = input.float(2.2, "Razão Risco/Recompensa ideal", step=0.1, group=grupo_estrategia)
+razao_risco_minima  = input.float(1.5, "Razão Risco/Recompensa mínima", step=0.1, group=grupo_estrategia)
+capital_risco       = input.float(500, "Capital arriscado por operação", step=50, group=grupo_estrategia,
+     tooltip="Valor monetário máximo que está disposto a perder em cada operação (ex: 1000 = 1% de 100.000)")
+
+grupo_canal = "Canal de Volatilidade"
+k_factor = input.float(0.5, "Fator de multiplicação da amplitude do dia anterior", minval=0.1, step=0.05, group=grupo_canal)
+
+grupo_momentum = "Filtro de Momentum (Fast Stochastic diário)"
+fstoch_period = input.int(14, "Período do Fast Stochastic (dias)", minval=1, maxval=50, group=grupo_momentum)
+overbought    = input.int(80, "Nível de hipercompra", minval=50, maxval=99, group=grupo_momentum)
+oversold      = input.int(20, "Nível de hipervenda", minval=1, maxval=50, group=grupo_momentum)
+
+grupo_volume = "Filtro de Volume (ROC suavizado)"
+vol_length = input.int(10, "Período do ROC de Volume (dias)", minval=1, group=grupo_volume)
+vol_sma    = input.int(5, "Período da SMA do ROC (dias)", minval=1, group=grupo_volume)
+
+// ─────────────────────────────────────────────────────────────
+// Cálculo de candles por dia
+// ─────────────────────────────────────────────────────────────
+timeframe_seconds = timeframe.in_seconds(timeframe.period)
+session_seconds   = session_duration_hours * 3600
+candles_per_day   = math.ceil(session_seconds / timeframe_seconds)
+
+// ─────────────────────────────────────────────────────────────
+// Dados diários e Canal de Volatilidade
+// ─────────────────────────────────────────────────────────────
+[open_d, high_prev, low_prev] = request.security(syminfo.tickerid, "D",
+     [open, high[1], low[1]], lookahead=barmerge.lookahead_off)
+
+range_prev      = high_prev - low_prev
+upper_threshold = open_d + (k_factor * range_prev)
+lower_threshold = open_d - (k_factor * range_prev)
+
+plot(upper_threshold, "Banda Superior", color=color.new(#2962FF, 0), force_overlay=true)
+plot(lower_threshold, "Banda Inferior", color=color.new(#D2042D, 0), force_overlay=true)
+
+// ─────────────────────────────────────────────────────────────
+// Fast Stochastic
+// ─────────────────────────────────────────────────────────────
+highest_high = ta.highest(high, fstoch_period * candles_per_day)
+lowest_low   = ta.lowest(low, fstoch_period * candles_per_day)
+fast_stoch   = 100 * (close - lowest_low) / (highest_high - lowest_low)
+
+plot(fast_stoch, "Fast Stochastic", color=color.navy)
+hline(overbought, "Hipercompra", color=color.black, linestyle=hline.style_dashed)
+hline(oversold, "Hipervenda", color=color.black, linestyle=hline.style_dashed)
+hline(50, "Linha Média", color=color.gray, linestyle=hline.style_dotted)
+
+// ─────────────────────────────────────────────────────────────
+// Filtro de Volume
+// ─────────────────────────────────────────────────────────────
+roc_volume     = ta.change(volume, vol_length * candles_per_day)
+sma_volume     = ta.sma(roc_volume, vol_sma * candles_per_day)
+volume_positivo = sma_volume > 0
+
+// ─────────────────────────────────────────────────────────────
+// Variáveis de gestão
+// ─────────────────────────────────────────────────────────────
+var float preco_entrada = na
+var float nivel_stop    = na
+var float nivel_target  = na
+var bool  em_posicao    = false
+
+// ─────────────────────────────────────────────────────────────
+// Condições de entrada
+// ─────────────────────────────────────────────────────────────
+arco_temporal  = timestamp(year(time), month(time), dayofmonth(time)) >= timestamp(2022, 01, 01)
+momentum_long  = fast_stoch > overbought
+momentum_short = fast_stoch < oversold
+
+condicao_long  = close > upper_threshold and not em_posicao and momentum_long and volume_positivo and operar_long and arco_temporal
+condicao_short = close < lower_threshold and not em_posicao and momentum_short and volume_positivo and not operar_long and arco_temporal
+
+// ─────────────────────────────────────────────────────────────
+// Detecção de saída
+// ─────────────────────────────────────────────────────────────
+liquidar_posicao = em_posicao and strategy.position_size == 0
+
+// ─────────────────────────────────────────────────────────────
+// Saída antecipada por perda de momentum
+// ─────────────────────────────────────────────────────────────
+perda_momentum = em_posicao and (operar_long ? ta.crossunder(fast_stoch, 50) : ta.crossover(fast_stoch, 50))
+
+// ─────────────────────────────────────────────────────────────
+// Execução da estratégia
+// ─────────────────────────────────────────────────────────────
+if condicao_long
+    preco_entrada := upper_threshold
+    nivel_stop    := preco_entrada - 2 * (k_factor * range_prev)
+    nivel_target  := preco_entrada + (preco_entrada - nivel_stop) * razao_risco_ideal
+    
+    risco_por_unidade = math.abs(preco_entrada - nivel_stop)
+    qty               = capital_risco / risco_por_unidade
+
+    if (nivel_target - close) / (close - nivel_stop) >= razao_risco_minima
+        strategy.entry("Long", strategy.long, qty=qty)
+        strategy.exit("TP/SL Long", "Long", stop=nivel_stop, limit=nivel_target)
+        em_posicao := true
+
+if condicao_short
+    preco_entrada := lower_threshold
+    nivel_stop    := preco_entrada + 2 * (k_factor * range_prev)
+    nivel_target  := preco_entrada - (nivel_stop - preco_entrada) * razao_risco_ideal
+    
+    risco_por_unidade = math.abs(nivel_stop - preco_entrada)
+    qty               = capital_risco / risco_por_unidade
+
+    if (close - nivel_target) / (nivel_stop - close) >= razao_risco_minima
+        strategy.entry("Short", strategy.short, qty=qty)
+        strategy.exit("TP/SL Short", "Short", stop=nivel_stop, limit=nivel_target)
+        em_posicao := true
+
+// Saída por stop/target ou por perda de momentum
+if liquidar_posicao or perda_momentum
+    Tag = operar_long ? "Long" : "Short"
+    strategy.close(Tag, qty_percent=100, immediately=true)  
+    em_posicao    := false
+    preco_entrada := na
+    nivel_stop    := na
+    nivel_target  := na
+
+// ─────────────────────────────────────────────────────────────
+// Visualização
+// ─────────────────────────────────────────────────────────────
+plot(em_posicao ? nivel_target : na, "Take-Profit", color=color.purple, style=plot.style_linebr, linewidth=1, force_overlay=true)
+plot(em_posicao ? nivel_stop   : na, "Stop-Loss", color=color.black, style=plot.style_linebr, linewidth=1, force_overlay=true)
+
+bgcolor(ta.change(time("W")) ? color.new(color.silver, 90) : na, title="Nova Semana", force_overlay=true)
+bgcolor(ta.change(time("W")) ? color.new(color.silver, 90) : na, title="Nova Semana")

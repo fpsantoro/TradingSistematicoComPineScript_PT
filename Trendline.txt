@@ -1,0 +1,185 @@
+//@version=5
+strategy("Trendline",
+     overlay = false,
+     initial_capital = 10000,
+     default_qty_type = strategy.cash,
+     default_qty_value = 10000,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.04,
+     pyramiding = 0)
+
+//───────────────────────────────────────────────────────────
+// Inputs
+//───────────────────────────────────────────────────────────
+group_session = "Configuração da Sessão"
+session_duration_hours = input.float(7.0, "Duração da Sessão (horas)", minval=0.1, step=0.1, group=group_session,
+ tooltip="Informe a duração da sessão de negociação em horas (ex: 7.0h para a B3)")
+
+grupo_estrategia = "Parâmetros da Estratégia"
+razao_risco         = input.float(1.2, "Razão Risco/Recompensa", step=0.1, group=grupo_estrategia)
+
+grupo_sltp = "Stop-Loss e Take-Profit"
+stop_loss_perc = input.float(2.0, "Stop-Loss (%)",
+ minval=0.1, step=0.1, group=grupo_sltp) / 100
+
+grupo_swings = "Níveis de Swing"
+mostrar_swings  = input.bool(true, "Mostrar Swing High/Low Diário", group=grupo_swings)
+cor_resistencia = color.new(color.teal, 0)
+cor_suporte     = color.new(color.maroon, 0)
+
+grupo_filtro = "Indicador Elder-ray"
+ER_period    = input.int(13, "Período da média móvel (Elder-ray)", minval=1, group=grupo_filtro)
+smoothingER  = input.string("EMA", "Método de suavização da média", options=["RMA", "SMA", "EMA", "WMA"],
+ group=grupo_filtro)
+
+group_visual = "Visualização"
+showTrendLines = input.bool(true, "Mostrar linhas de tendência", group=group_visual)
+maxLines       = input.int(1, "Número máximo de linhas independentes", minval=1, maxval=20, group=group_visual)
+
+//───────────────────────────────────────────────────────────
+// Dados diários e cálculo de candles por dia
+//───────────────────────────────────────────────────────────
+[maxima_d, minima_d] = request.security(syminfo.tickerid,
+ "D", [high, low], lookahead=barmerge.lookahead_off)
+[maxima_d1, minima_d1] = request.security(syminfo.tickerid,
+ "D", [high[1], low[1]], lookahead=barmerge.lookahead_off)
+[maxima_d2, minima_d2] = request.security(syminfo.tickerid,
+ "D", [high[2], low[2]], lookahead=barmerge.lookahead_off)
+
+timeframe_seconds = timeframe.in_seconds(timeframe.period)
+session_seconds   = session_duration_hours * 3600
+candles_per_day   = math.ceil(session_seconds /
+ timeframe_seconds)
+
+var float ultimo_swing_high = na
+var float penultimo_swing_high = na
+var float ultimo_swing_low = na
+var float penultimo_swing_low = na
+var int lastSwingBar = na
+var int prevSwingBar = na
+
+novo_dia = ta.change(time("D")) != 0
+swing_high_diario = novo_dia and not na(maxima_d) and not
+ na(maxima_d1) and not na(maxima_d2) and maxima_d1 > maxima_d
+ and maxima_d1 > maxima_d2
+
+swing_low_diario  = novo_dia and not na(minima_d) and not
+ na(minima_d1) and not na(minima_d2) and minima_d1 < minima_d
+ and minima_d1 < minima_d2
+
+if swing_high_diario
+    penultimo_swing_high := ultimo_swing_high
+    ultimo_swing_high    := maxima_d1
+    prevSwingBar         := lastSwingBar
+    lastSwingBar         := bar_index - 2 * candles_per_day
+
+if swing_low_diario
+    penultimo_swing_low := ultimo_swing_low
+    ultimo_swing_low    := minima_d1
+
+plot(mostrar_swings ? ultimo_swing_high : na,
+ "Resistência Diária", color = cor_resistencia,
+ style = plot.style_circles, linewidth = 1,
+ offset = -candles_per_day, force_overlay = true)
+plot(mostrar_swings ? ultimo_swing_low  : na,
+ "Suporte Diário", color = cor_suporte,
+ style =plot.style_circles, linewidth = 1,
+ offset = -candles_per_day, force_overlay = true)
+
+//───────────────────────────────────────────────────────────
+// Linhas de tendência independents
+//───────────────────────────────────────────────────────────
+var line[] trendLines = array.new_line()
+
+if swing_high_diario and not na(penultimo_swing_high)
+ and not na(ultimo_swing_high)
+    if penultimo_swing_high > ultimo_swing_high and
+ prevSwingBar < lastSwingBar
+        line newLine = line.new(prevSwingBar,
+ penultimo_swing_high, lastSwingBar, ultimo_swing_high,
+             xloc=xloc.bar_index, extend=extend.right,
+             color=showTrendLines ? color.orange :
+ color.new(color.orange, 100),
+             width=1, style=line.style_solid,
+ force_overlay=true)
+        array.push(trendLines, newLine)
+        if array.size(trendLines) > maxLines
+            line oldLine = array.shift(trendLines)
+            line.delete(oldLine)
+
+// Valor atual da trendline mais recente
+var float currentTLValue = na
+if array.size(trendLines) > 0
+    line lastLine = array.get(trendLines,
+ array.size(trendLines) - 1)
+    int x1 = line.get_x1(lastLine)
+    float y1 = line.get_y1(lastLine)
+    int x2 = line.get_x2(lastLine)
+    float y2 = line.get_y2(lastLine)
+    if x2 != x1
+        float slope = (y2 - y1) / (x2 - x1)
+        currentTLValue := y1 + slope * (bar_index - x1)
+    else
+        currentTLValue := y1
+else
+    currentTLValue := na
+
+//───────────────────────────────────────────────────────────
+// Indicador Elder-ray
+//───────────────────────────────────────────────────────────
+ma_function(source, length, smoothing) =>
+    switch smoothing
+        "RMA" => ta.rma(source, length)
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        => ta.wma(source, length)
+
+ERma   = ma_function(close, ER_period * candles_per_day, smoothingER)
+BullPwr = maxima_d - ERma
+BearPwr = minima_d - ERma
+
+plot(BullPwr[1], "Bull Power", color=color.new(color.green, 25), style=plot.style_columns)
+plot(BearPwr[1], "Bear Power", color=color.new(color.red,
+ 50), style=plot.style_columns)
+hline(0, "Linha Zero", color.black, hline.style_dotted)
+
+//───────────────────────────────────────────────────────────
+// Condições de entrada e gestão da posição
+//───────────────────────────────────────────────────────────
+var bool  in_position       = false
+var float entry_price       = na
+var float stop_loss_level   = na
+var float take_profit_level = na
+time_condition = timestamp(year(time), month(time),
+ dayofmonth(time)) >= timestamp(2022, 01, 01)
+bullish_trend  = BearPwr < 0 and close > ERma
+
+longCondition = not in_position and not na(currentTLValue)
+ and ta.crossover(close, currentTLValue) and time_condition
+ and bullish_trend
+
+exit_by_strategy = in_position and strategy.position_size==0
+
+if longCondition
+    in_position       := true
+    entry_price       := close
+    stop_loss_level   := entry_price * (1 - stop_loss_perc)
+    take_profit_level := entry_price + (entry_price –
+ stop_loss_level) * razao_risco
+    strategy.entry("Long", strategy.long)
+    strategy.exit("TP/SL", "Long", stop=stop_loss_level,
+ limit=take_profit_level)
+
+if exit_by_strategy
+    in_position       := false
+    entry_price       := na
+    stop_loss_level   := na
+    take_profit_level := na
+
+// Visualização dos níveis
+plot(in_position ? take_profit_level : na, "Take-Profit",
+ color=color.purple, style=plot.style_linebr, linewidth=1,
+ force_overlay=true)
+plot(in_position ? stop_loss_level   : na, "Stop-Loss", 
+ color=color.black,  style=plot.style_linebr, linewidth=1,
+ force_overlay=true)

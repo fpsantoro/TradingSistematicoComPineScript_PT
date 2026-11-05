@@ -1,0 +1,137 @@
+//@version=5
+strategy("Pullback", 
+     overlay = false, 
+     initial_capital = 100000, 
+     default_qty_type = strategy.cash, 
+     default_qty_value = 10000, 
+     commission_type = strategy.commission.percent, 
+     commission_value = 0.04, 
+     pyramiding = 0)
+
+//───────────────────────────────────────────────────────────
+// Inputs
+//───────────────────────────────────────────────────────────
+group_session = "Configuração da Sessão"
+session_duration_hours = input.float(7.0, "Duração da Sessão (horas)", minval=0.1, step=0.1, group=group_session,
+ tooltip="Informe a duração da sessão de negociação em horas (ex: 8.5h para as principais bolsas europeias")
+
+grupo_estrategia = "Parâmetros da Estratégia"
+operar_long         = input.bool(true, "Operar Long (true) ou Short (false)", group = grupo_estrategia)
+razao_risco   = input.float(2.2, "Razão Risco/Recompensa",
+ step = 0.1, group = grupo_estrategia)
+stop_loss_perc   = input.float(4.5, "Stop-Loss (%)",
+ minval = 0.1, step = 0.1, group = grupo_estrategia) / 100
+
+
+grupo_filtro     = "Índice de força relativa"
+lenRSI = input.int(10, " Período para o RSI (em dias)",
+ minval=1, group = grupo_filtro)
+lenMA = input.int(5, " Período para a média móvel sobre o RSI (em dias)", minval=1, group = grupo_filtro)
+limiteRSI = input.int(50, minval=1, title="Valor limite do RSI", group=grupo_filtro)
+
+grupo_medias     = "Médias móveis"
+lenMAr = input.int(13, "Período para a média móvel rapida (em dias)", minval=1, group = grupo_medias)
+lenMAl = input.int(200, " Período para a média móvel lenta (em dias)", minval=1, group = grupo_medias)
+
+//───────────────────────────────────────────────────────────
+// Declaração de variaveis
+//───────────────────────────────────────────────────────────
+
+var float ultimo_swing_high = na
+var float penultimo_swing_high = na
+var float ultimo_swing_low  = na
+var float penultimo_swing_low  = na
+var float preco_entrada     = na
+var float nivel_stop        = na
+var float nivel_target      = na
+var bool  em_posicao        = false
+
+//───────────────────────────────────────────────────────────
+// Cálculo do indicador
+//───────────────────────────────────────────────────────────
+// Cálculo do número de candles por dia
+timeframe_seconds = timeframe.in_seconds(timeframe.period)
+session_seconds   = session_duration_hours * 3600
+candles_per_day   = math.ceil(session_seconds /
+ timeframe_seconds)
+
+// Cálculo do Índice de força relativa
+rsi = ta.rsi(close, lenRSI * candles_per_day)
+ma_rsi = ta.sma(rsi, lenMA * candles_per_day)
+
+plot(rsi, "RSI", color=color.red)
+plot(ma_rsi, "RSI", color=color.silver)
+hline(limiteRSI, "Limite", color=color.black,
+ linestyle=hline.style_dashed)
+
+// Cálculo das médias móveis
+maR = ta.sma(close, lenMAr * candles_per_day)
+maL = ta.sma(close, lenMAl * candles_per_day)
+
+plot(maR, "Média móvel rápida", color=color.purple,
+ force_overlay = true)
+plot(maL, "Média móvel lenta", color=color.teal,
+ force_overlay = true)
+
+//───────────────────────────────────────────────────────────
+// Condições de estrutura
+//───────────────────────────────────────────────────────────
+arco_temporal = timestamp(year(time), month(time),
+ dayofmonth(time)) >= timestamp(2022, 01, 01) 
+
+momentum = rsi > limiteRSI
+tendencia_alta = close > maL
+
+// Condições de entrada
+condicao_long  = ta.crossover(close, maR) and not em_posicao
+ and tendencia_alta and arco_temporal and operar_long
+ and momentum
+condicao_short = ta.crossunder(close, maR) and not em_posicao
+ and not tendencia_alta and arco_temporal and not operar_long
+ and not momentum
+
+// Detecção de saída por stop-loss ou take-profit
+liquidar_posicao = em_posicao and strategy.position_size == 0
+
+//───────────────────────────────────────────────────────────
+// Execução da estratégia
+//───────────────────────────────────────────────────────────
+if condicao_long
+    preco_entrada := close
+    nivel_stop    := preco_entrada * (1 - stop_loss_perc)
+    nivel_target  := preco_entrada * (1 + razao_risco *
+ stop_loss_perc)
+
+    strategy.entry("Long", strategy.long)
+    strategy.exit("TP/SL Long", "Long", stop = nivel_stop,
+ limit = nivel_target)
+    em_posicao := true
+
+if condicao_short
+    preco_entrada := close
+    nivel_stop    := preco_entrada * (1 + stop_loss_perc)
+    nivel_target  := preco_entrada * (1 - razao_risco *
+ stop_loss_perc)
+
+    strategy.entry("Short", strategy.short)
+    strategy.exit("TP/SL Short", "Short", stop = nivel_stop,
+ limit = nivel_target)
+    em_posicao := true
+
+ // Reset quando a posição é encerrada
+if liquidar_posicao
+    em_posicao    := false
+    preco_entrada := na
+    nivel_stop    := na
+    nivel_target  := na
+
+//───────────────────────────────────────────────────────────
+// Visualização dos níveis
+//───────────────────────────────────────────────────────────
+plot(em_posicao ? nivel_target : na, "Take-Profit",
+ color = color.purple, style = plot.style_linebr,
+ linewidth = 1, force_overlay = true)
+plot(em_posicao ? nivel_stop   : na, "Stop-Loss",
+ color = color.black,  style = plot.style_linebr,
+ linewidth = 1, force_overlay = true)
+
