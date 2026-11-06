@@ -1,7 +1,7 @@
 # TradingSistematicoComPineScript_PT
 Estrategias em Pine Script - Trading Sistemático com Pine Script
 
-Bem-vindo ao recurso oficial do livro! Aqui você encontrará todos os códigos em Pine Script prontos para copiar e colar no TradingView, sem precisar digitá-los manualmente.
+Bem-vindo ao recurso oficial do livro (edição PT-PT / PT-BR)! Aqui você encontrará todos os códigos em Pine Script prontos para copiar e colar no TradingView, sem precisar digitá-los manualmente.
 
 ## 📂 Lista das Estratégias
 * [Anexo B : Código da estratégia Vortex] - Abra o arquivo `Vortex.txt`
