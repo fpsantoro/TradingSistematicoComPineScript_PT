@@ -17,7 +17,7 @@ session_duration_hours = input.float(8.5, "Duração da Sessão (horas)", minval
 
 grupo_estrategia = "Parâmetros da Estratégia"
 operar_long         = input.bool(true, "Operar Long (true) ou Short (false)", group = grupo_estrategia)
-razao_risco_ideal   = input.float(2.2, "Razão Risco/Recompensa ideal", step = 0.1, group = rupo_estrategia)
+razao_risco_ideal   = input.float(2.2, "Razão Risco/Recompensa ideal", step = 0.1, group = grupo_estrategia)
 razao_risco_minima  = input.float(1.5, "Razão Risco/Recompensa mínima", step = 0.1, group=grupo_estrategia)
 
 grupo_sltp       = "Stop-Loss e Take-Profit"
