@@ -164,7 +164,7 @@ if longCondition
     in_position       := true
     entry_price       := close
     stop_loss_level   := entry_price * (1 - stop_loss_perc)
-    take_profit_level := entry_price + (entry_price –
+    take_profit_level := entry_price + (entry_price - 
  stop_loss_level) * razao_risco
     strategy.entry("Long", strategy.long)
     strategy.exit("TP/SL", "Long", stop=stop_loss_level,
